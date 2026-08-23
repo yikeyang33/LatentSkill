@@ -255,6 +255,13 @@ python evals/searchqa/retrieval_server.py \
   --topk 3 \
   --port 8000
 ```
+## Acknowledgment
+
+This project’s hypernetwork implementation is based on SHINE: https://github.com/SHINE-Repository/SHINE. We thank the original authors for making the implementation and research available to the community.
+
+## Third-party attribution and license notice
+
+Portions of this repository are adapted from SHINE, which is licensed under the Apache License 2.0. Those adapted files retain the original SHINE copyright notice and Apache License 2.0 attribution requirements.
 
 ## Citation
 
