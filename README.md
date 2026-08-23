@@ -257,7 +257,7 @@ python evals/searchqa/retrieval_server.py \
 ```
 ## Acknowledgment
 
-This project’s hypernetwork implementation is based on SHINE: https://github.com/SHINE-Repository/SHINE. We thank the original authors for making the implementation and research available to the community.
+This project’s hypernetwork implementation is based on SHINE: https://github.com/MuLabPKU/SHINE. We thank the original authors for making the implementation and research available to the community.
 
 ## Third-party attribution and license notice
 
