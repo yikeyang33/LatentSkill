@@ -1,3 +1,9 @@
+# Copyright 2025 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Based on and adapted from SHINE: [https://github.com/MuLabPKU/SHINE](https://github.com/MuLabPKU/SHINE)
+# Modified by the LatentSkill authors in 2026.
+
 from dataclasses import dataclass
 from typing import Callable, Optional, Union
 

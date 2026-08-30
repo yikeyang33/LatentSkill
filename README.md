@@ -5,7 +5,7 @@
   <a href="https://github.com/yuaofan0-oss/LatentSkill"><img src="https://img.shields.io/badge/Code-GitHub-blue" alt="Code"></a>
   <a href="https://huggingface.co/datasets/AofaYu71/LatentSkill"><img src="https://img.shields.io/badge/Data-HuggingFace-yellow" alt="Data"></a>
   <a href="https://huggingface.co/AofaYu71/LatentSkill"><img src="https://img.shields.io/badge/Checkpoints-HuggingFace-yellow" alt="Checkpoints"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-green" alt="Apache License 2.0"></a>
 </p>
 
 This is the official repository for **LatentSkill**, a method that converts reusable textual agent skills into plug-and-play LoRA adapters through a hypernetwork-based skill compiler. Instead of injecting skill text into every prompt, LatentSkill stores skill knowledge in weight space, reducing prompt overhead while keeping skills modular, scalable, and composable.
@@ -255,13 +255,14 @@ python evals/searchqa/retrieval_server.py \
   --topk 3 \
   --port 8000
 ```
+
 ## Acknowledgment
 
-This project’s hypernetwork implementation is based on SHINE: https://github.com/MuLabPKU/SHINE. We thank the original authors for making the implementation and research available to the community.
+This project’s hypernetwork implementation is based on SHINE: [https://github.com/MuLabPKU/SHINE](https://github.com/MuLabPKU/SHINE). We thank the original authors for making the implementation and research available to the community.
 
-## Third-party attribution and license notice
+## License
 
-Portions of this repository are adapted from SHINE, which is licensed under the Apache License 2.0. Those adapted files retain the original SHINE copyright notice and Apache License 2.0 attribution requirements.
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
 
 ## Citation
 
@@ -278,7 +279,3 @@ If you find this work useful, please cite:
       url={https://arxiv.org/abs/2606.06087},
 }
 ```
-
-## License
-
-This project is released under the MIT License.
