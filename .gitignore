@@ -46,6 +46,9 @@ analysis/skill_loras/
 alfworld_data/
 latentskill_env/
 .venv/
+.rsync-partial/
+runs/
+migration/
 env_requirements/
 eval/**/logs/
 eval/**/results*/
