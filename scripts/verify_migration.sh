@@ -41,15 +41,21 @@ else
     failed=1
 fi
 
-if ! command -v uv >/dev/null 2>&1; then
-    echo "[missing] uv is not installed" >&2
-    failed=1
-elif [ ! -x .venv/bin/python ]; then
-    echo "[missing] .venv is absent; run: uv sync --locked" >&2
-    failed=1
+if [ -x .shared-runtime/venv/bin/python ]; then
+    eval_python=.shared-runtime/venv/bin/python
+    echo "[ok] using shared uv environment: ${eval_python}"
+elif [ -x .venv/bin/python ]; then
+    eval_python=.venv/bin/python
+    echo "[ok] using local uv environment: ${eval_python}"
 else
-    UV_CACHE_DIR=${UV_CACHE_DIR:-/tmp/latentskill-uv-cache} \
-        uv run --locked --no-sync python - <<'PY'
+    echo "[missing] no executable uv environment found" >&2
+    echo "          run: bash scripts/setup_shared_env.sh" >&2
+    failed=1
+    eval_python=
+fi
+
+if [ -n "$eval_python" ]; then
+    "$eval_python" - <<'PY'
 import torch
 
 print(f"[info] torch={torch.__version__} cuda_runtime={torch.version.cuda}")

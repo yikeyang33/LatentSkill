@@ -12,6 +12,26 @@ experiment assets are copied separately with resumable `rsync`:
 The local `.venv/` is intentionally not transferred. The destination rebuilds
 it from `uv.lock`.
 
+## Shared-storage clusters
+
+When multiple GPU servers mount this repository at the same absolute `/media`
+path, no asset transfer is necessary. Create one shared runtime instead:
+
+```bash
+bash scripts/setup_shared_env.sh
+```
+
+This installs both the managed Python interpreter and the environment below
+`.shared-runtime/`, so the virtual environment does not point at a machine-local
+Python under `$HOME`. Run commands through the shared environment with:
+
+```bash
+bash scripts/uv_shared.sh run python -m evals.alfworld.evaluate --help
+```
+
+The environment may be read concurrently from multiple machines, but only one
+process should run `setup_shared_env.sh` or `uv sync` at a time.
+
 ## One-command migration
 
 The destination must have Git, uv, rsync, SSH access, and a compatible NVIDIA
