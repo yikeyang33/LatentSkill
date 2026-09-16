@@ -10,6 +10,10 @@
 
 This is the official repository for **LatentSkill**, a method that converts reusable textual agent skills into plug-and-play LoRA adapters through a hypernetwork-based skill compiler. Instead of injecting skill text into every prompt, LatentSkill stores skill knowledge in weight space, reducing prompt overhead while keeping skills modular, scalable, and composable.
 
+For project-specific instructions on synchronizing code, local model weights,
+checkpoints, ALFWorld data, and the locked uv environment to another development
+machine, see [SYNC_README.md](SYNC_README.md).
+
 ## Overview
 
 <p align="center">

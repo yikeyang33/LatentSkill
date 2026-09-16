@@ -1,5 +1,10 @@
 # Cross-server migration
 
+> For the current machine-specific pull workflow, including the public
+> Qwen3-8B path and the media-backed uv environment, use
+> [SYNC_README.md](SYNC_README.md). This file documents the older generic
+> migration helpers.
+
 The source code and reproducible Python environment are stored in Git. Large
 experiment assets are copied separately with resumable `rsync`:
 
@@ -86,7 +91,7 @@ are preserved.
 
 ## Current source inventory
 
-At the time this migration setup was added, the source contained approximately
-128 GiB of checkpoints and 2.3 GiB of ALFWorld data. Qwen3-8B model weights
-were not yet present in `models/Qwen3-8B/`; download or synchronize them before
-expecting `verify_migration.sh` to pass.
+The authoritative Qwen3-8B copy is now the shared local model at
+`/media/public/models/huggingface/Qwen/Qwen3-8B`. The project-local
+`models/Qwen3-8B/` directory is not the authoritative model source. Follow
+`SYNC_README.md` to reuse or rsync the public model explicitly.
