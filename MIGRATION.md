@@ -23,6 +23,16 @@ bash scripts/migrate_to_server.sh \
   /absolute/path/LatentSkill
 ```
 
+For a non-default SSH port or a specific private key:
+
+```bash
+SSH_PORT=32073 \
+SSH_IDENTITY_FILE="$HOME/.ssh/id_ed25519" \
+bash scripts/migrate_to_server.sh \
+  root@117.186.102.101 \
+  /absolute/path/LatentSkill
+```
+
 The script performs four operations:
 
 1. Clone or fast-forward `https://github.com/yikeyang33/LatentSkill.git`.

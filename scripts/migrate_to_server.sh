@@ -7,6 +7,8 @@
 #
 # Optional environment variables:
 #   REPO_URL=https://github.com/yikeyang33/LatentSkill.git
+#   SSH_PORT=32073     Non-default SSH port.
+#   SSH_IDENTITY_FILE=/path/to/private_key
 #   SKIP_ENV=1        Skip `uv sync --locked` on the target.
 #   SKIP_VERIFY=1     Skip the target-side verification step.
 #   DRY_RUN=1         Only show which assets rsync would transfer.
@@ -23,6 +25,19 @@ TARGET_PATH=$2
 REPO_URL=${REPO_URL:-https://github.com/yikeyang33/LatentSkill.git}
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
+SSH_ARGS=()
+RSYNC_SSH=(ssh)
+if [ -n "${SSH_PORT:-}" ]; then
+    SSH_ARGS+=(-p "$SSH_PORT")
+    RSYNC_SSH+=(-p "$SSH_PORT")
+fi
+if [ -n "${SSH_IDENTITY_FILE:-}" ]; then
+    SSH_ARGS+=(-i "$SSH_IDENTITY_FILE" -o IdentitiesOnly=yes)
+    RSYNC_SSH+=(-i "$SSH_IDENTITY_FILE" -o IdentitiesOnly=yes)
+fi
+printf -v RSYNC_RSH '%q ' "${RSYNC_SSH[@]}"
+export RSYNC_RSH=${RSYNC_RSH% }
+
 if [[ "$TARGET_PATH" != /* ]]; then
     echo "Target path must be absolute: ${TARGET_PATH}" >&2
     exit 2
@@ -32,7 +47,7 @@ printf -v quoted_target '%q' "$TARGET_PATH"
 printf -v quoted_repo '%q' "$REPO_URL"
 
 echo "[1/4] Preparing Git checkout on ${REMOTE}:${TARGET_PATH}"
-ssh "$REMOTE" \
+ssh "${SSH_ARGS[@]}" "$REMOTE" \
     "if [ -d ${quoted_target}/.git ]; then git -C ${quoted_target} pull --ff-only; else mkdir -p \$(dirname ${quoted_target}) && git clone ${quoted_repo} ${quoted_target}; fi"
 
 echo "[2/4] Synchronizing large assets with resumable rsync"
@@ -46,7 +61,7 @@ fi
 
 if [ "${SKIP_ENV:-0}" != "1" ]; then
     echo "[3/4] Rebuilding locked uv environment on target"
-    ssh "$REMOTE" \
+    ssh "${SSH_ARGS[@]}" "$REMOTE" \
         "cd ${quoted_target} && UV_LINK_MODE=copy uv sync --locked"
 else
     echo "[3/4] Skipping target uv environment rebuild"
@@ -54,7 +69,7 @@ fi
 
 if [ "${SKIP_VERIFY:-0}" != "1" ]; then
     echo "[4/4] Verifying target assets and CUDA runtime"
-    ssh "$REMOTE" \
+    ssh "${SSH_ARGS[@]}" "$REMOTE" \
         "cd ${quoted_target} && bash scripts/verify_migration.sh"
 else
     echo "[4/4] Skipping target verification"
