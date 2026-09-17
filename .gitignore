@@ -46,6 +46,10 @@ analysis/skill_loras/
 alfworld_data/
 latentskill_env/
 .venv/
+artifacts/alfworld_skill_loras/
+artifacts/alfworld_skill_loras_zero/
+runtime/vllm/python/
+runtime/vllm/cache/
 .shared-runtime/
 .rsync-partial/
 runs/

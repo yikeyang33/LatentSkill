@@ -583,7 +583,16 @@ class LatentSkillQwen3Model(LatentSkillPreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         if self.use_mem_token and not ignore_mem_token:
-            memory_states = torch.zeros((hidden_states.shape[0], self.config.num_hidden_layers, self.num_mem_token, self.config.hidden_size)).to(self.device)
+            memory_states = torch.zeros(
+                (
+                    hidden_states.shape[0],
+                    self.config.num_hidden_layers,
+                    self.num_mem_token,
+                    self.config.hidden_size,
+                ),
+                dtype=hidden_states.dtype,
+                device=hidden_states.device,
+            )
 
         for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if use_gradient_checkpoint:

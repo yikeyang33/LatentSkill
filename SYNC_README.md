@@ -252,7 +252,43 @@ PYTHONPATH="$PWD" \
 .shared-runtime/venv/bin/python -m evals.alfworld.evaluate --help
 ```
 
-## 7. 在远端提交长任务
+## 7. BF16 vLLM 连续批处理环境
+
+高吞吐 ALFWorld 评测使用单独的 `runtime/vllm/uv.lock`。和主环境一样，目标机
+只同步 Git 中的锁文件，然后在 media 盘重建，不能复制 `runtime/vllm/.venv/`：
+
+```bash
+cd /media/"$USER"/research/RSI/repos/LatentSkill
+UV_BIN=/media/"$USER"/uv/bin/uv bash scripts/setup_vllm_env.sh
+```
+
+生成的 Python、虚拟环境和缓存全部位于项目下的 `runtime/vllm/`。五个导出的
+ALFWorld LoRA 位于 `artifacts/alfworld_skill_loras/`，不进入 Git。可以在目标机
+使用 checkpoint 重新导出：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. .shared-runtime/venv/bin/python \
+  scripts/export_alfworld_skill_loras.py \
+  --checkpoint checkpoints/latentskill_sft_qwen3_8b/checkpoint-epoch-10 \
+  --model_path "$MODEL_PATH"
+```
+
+也可以从源机断点同步已经验证过的导出结果：
+
+```bash
+mkdir -p artifacts/alfworld_skill_loras
+rsync -avh --partial --info=progress2,stats2 --protect-args \
+  changliu:/media/yangyike/research/RSI/repos/LatentSkill/artifacts/alfworld_skill_loras/ \
+  artifacts/alfworld_skill_loras/
+```
+
+每个 LoRA 目录中的 tokenizer 文件必须一起同步；vLLM 会依据每个 adapter 路径
+解析 tokenizer，不能只复制 `adapter_model.safetensors` 和配置文件。
+
+服务和评测仍必须分别放进有名字的 tmux 会话。完整命令见主 `README.md` 的
+ALFWorld BF16 vLLM 小节。
+
+## 8. 在远端提交长任务
 
 所有远端长任务必须在命名 tmux 会话中运行，并把输出写入日志：
 
@@ -271,7 +307,7 @@ tmux attach -t latentskill-sft-seen
 
 默认日志位于 `evals/alfworld/logs/`，结果位于 `evals/alfworld/results/`。
 
-## 8. 最短操作清单
+## 9. 最短操作清单
 
 目标机没有共享盘时，按以下顺序操作：
 

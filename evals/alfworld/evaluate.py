@@ -6,6 +6,9 @@ import json
 import re
 import argparse
 import gc
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
@@ -81,6 +84,10 @@ def parse_args():
                         help="Model precision; float32 preserves the original evaluator")
     parser.add_argument("--model_parallel", action="store_true",
                         help="Shard complete model layers across all visible GPUs")
+    parser.add_argument("--vllm_base_url", type=str, default=None,
+                        help="Use an OpenAI-compatible vLLM server for generation")
+    parser.add_argument("--vllm_model_prefix", type=str, default="latentskill")
+    parser.add_argument("--vllm_timeout", type=float, default=900.0)
     parser.add_argument("--zero_shot", action="store_true",
                     help="Use the Qwen3-8B backbone without LatentSkill adapters")
     parser.add_argument("--skill_incontext", action="store_true",
@@ -150,7 +157,10 @@ def load_model(args, base_only: bool = False):
         if args.dtype == "bfloat16" and device.type == "cuda"
         else torch.float32
     )
-    print(f"[model] dtype={model_dtype}")
+    if args.vllm_base_url:
+        print("[model] generation backend=vLLM (server owns model dtype/device)")
+    else:
+        print(f"[model] dtype={model_dtype}")
     config_path = Path("configs") / f"{args.config_name}.yaml"
     cfg = OmegaConf.load(config_path)
 
@@ -185,20 +195,21 @@ def load_model(args, base_only: bool = False):
     cfg.hidden_size = model_config.hidden_size
     cfg.num_layers  = model_config.num_hidden_layers
 
-    # Only module shapes are needed here. Constructing on the meta device avoids
-    # reading the 8B checkpoint twice and does not affect model values.
-    from accelerate import init_empty_weights
-    with init_empty_weights():
-        shape_model = BackboneModelCls(model_config)
-    adapter_numel = shape_model.adapter_params_numel(cfg.model.lora_r)
-    assert adapter_numel % (cfg.hidden_size * cfg.num_layers) == 0
-    model_config.num_mem_token = (
-        adapter_numel * cfg.hypernetwork.transformer_cfg.mean_pool_size
-        // (cfg.hidden_size * cfg.num_layers)
-    )
-    cfg.num_mem_token = model_config.num_mem_token
-    del shape_model
-    gc.collect()
+    if not args.vllm_base_url:
+        # Only module shapes are needed here. Constructing on the meta device
+        # avoids reading the 8B checkpoint twice and does not affect values.
+        from accelerate import init_empty_weights
+        with init_empty_weights():
+            shape_model = BackboneModelCls(model_config)
+        adapter_numel = shape_model.adapter_params_numel(cfg.model.lora_r)
+        assert adapter_numel % (cfg.hidden_size * cfg.num_layers) == 0
+        model_config.num_mem_token = (
+            adapter_numel * cfg.hypernetwork.transformer_cfg.mean_pool_size
+            // (cfg.hidden_size * cfg.num_layers)
+        )
+        cfg.num_mem_token = model_config.num_mem_token
+        del shape_model
+        gc.collect()
 
     tokenizer = AutoTokenizer.from_pretrained(
         cfg.model.tokenizer_from, padding_side="left", use_fast=True
@@ -264,6 +275,9 @@ def load_model(args, base_only: bool = False):
         "    {%- if enable_thinking is not defined or enable_thinking != false %}\n"
         "        {{- '<think>\\n' }}\n    {%- endif %}\n{%- endif %}"
     )
+
+    if args.vllm_base_url:
+        return None, None, tokenizer, torch.device("cpu"), cfg, None
 
     backbone = BackboneModelCls.from_pretrained(
         cfg.model.model_from, config=model_config, dtype=model_dtype
@@ -384,6 +398,39 @@ def move_adapter_state_to_model(adapter_state, backbone):
         )
         for layer_index, layer_state in adapter_state.items()
     }
+
+
+def generate_vllm(args, model_name, prompt):
+    """Run one greedy completion through vLLM's OpenAI-compatible API."""
+    endpoint = args.vllm_base_url.rstrip("/") + "/v1/completions"
+    payload = json.dumps({
+        "model": model_name,
+        "prompt": prompt,
+        "max_tokens": args.max_new_tokens,
+        "temperature": 0.0,
+        # One ALFWorld turn needs exactly one complete action.  Keep the
+        # closing tag for the existing parser, but stop immediately after it
+        # instead of wasting the remaining 4K-token budget.
+        "stop": ["</action>"],
+        "include_stop_str_in_output": True,
+    }).encode("utf-8")
+    last_error = None
+    for attempt in range(4):
+        request = urllib.request.Request(
+            endpoint,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=args.vllm_timeout) as response:
+                body = json.load(response)
+            return body["choices"][0]["text"].strip()
+        except (OSError, KeyError, ValueError, urllib.error.HTTPError) as error:
+            last_error = error
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"vLLM request failed after 4 attempts: {last_error}")
 
 
 def detect_task_type(gamefile: str) -> str:
@@ -678,7 +725,13 @@ def main():
             print(f"[WARNING] component file not found: {cpath}")
             skill_component_contexts[cname] = ""
 
-    if not use_lora:
+    if args.vllm_base_url:
+        skill_adapter_states = {
+            skill: f"{args.vllm_model_prefix}-{skill}"
+            for skill in skill_contexts
+        }
+        print(f"[adapter] using served vLLM adapters: {skill_adapter_states}")
+    elif not use_lora:
         print("[adapter] zero-shot mode: skipping adapter generation")
         skill_adapter_states = {skill: None for skill in skill_contexts}
     else:
@@ -875,7 +928,7 @@ def main():
             print("[lora_combo] moe_combo: 0.15×gen + 0.15×look_task "
                   "+ 0.15×pick_task + 0.15×mistakes, rank expands from 8 to 32")
 
-    if use_lora:
+    if use_lora and not args.vllm_base_url:
         # Evaluation only needs the generated adapters and backbone. Releasing the
         # compiler lowers steady-state memory enough for 24GB inference cards.
         del metalora
@@ -1269,42 +1322,55 @@ def main():
                     print(decoded_prompt[-4000:])
                     print("=" * 100)
 
-                with torch.no_grad():
-                    if args.raw_base:
-                        output_ids = backbone.generate(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            max_new_tokens=args.max_new_tokens,
-                            pad_token_id=tokenizer.pad_token_id,
-                            eos_token_id=tokenizer.eos_token_id,
-                            do_sample=False,
-                        )
-                    elif not use_lora:
-                        output_ids = backbone.generate(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            max_new_tokens=args.max_new_tokens,
-                            pad_token_id=tokenizer.pad_token_id,
-                            eos_token_id=tokenizer.eos_token_id,
-                            do_sample=False,
-                            ignore_mem_token=True,
-                        )
-                    else:
-                        output_ids = skill_hypernet.backbone.generate(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            max_new_tokens=args.max_new_tokens,
-                            pad_token_id=tokenizer.pad_token_id,
-                            eos_token_id=tokenizer.eos_token_id,
-                            do_sample=False,
-                            ignore_mem_token=True,
-                            adapter_state=adapter_state,
-                        )
+                if args.vllm_base_url:
+                    server_prompt = tokenizer.decode(
+                        input_ids[0], skip_special_tokens=False
+                    )
+                    output_text = generate_vllm(
+                        args, adapter_state, server_prompt
+                    )
+                    print(
+                        f"[vllm] episode={episode_idx} step={step} "
+                        f"model={adapter_state} chars={len(output_text)} "
+                        f"tail={output_text[-120:]!r}"
+                    )
+                else:
+                    with torch.inference_mode():
+                        if args.raw_base:
+                            output_ids = backbone.generate(
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                max_new_tokens=args.max_new_tokens,
+                                pad_token_id=tokenizer.pad_token_id,
+                                eos_token_id=tokenizer.eos_token_id,
+                                do_sample=False,
+                            )
+                        elif not use_lora:
+                            output_ids = backbone.generate(
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                max_new_tokens=args.max_new_tokens,
+                                pad_token_id=tokenizer.pad_token_id,
+                                eos_token_id=tokenizer.eos_token_id,
+                                do_sample=False,
+                                ignore_mem_token=True,
+                            )
+                        else:
+                            output_ids = skill_hypernet.backbone.generate(
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                max_new_tokens=args.max_new_tokens,
+                                pad_token_id=tokenizer.pad_token_id,
+                                eos_token_id=tokenizer.eos_token_id,
+                                do_sample=False,
+                                ignore_mem_token=True,
+                                adapter_state=adapter_state,
+                            )
 
-                new_tokens  = output_ids[0, input_ids.shape[1]:]
-                output_text = tokenizer.decode(
-                    new_tokens, skip_special_tokens=True
-                ).strip()
+                    new_tokens = output_ids[0, input_ids.shape[1]:]
+                    output_text = tokenizer.decode(
+                        new_tokens, skip_special_tokens=True
+                    ).strip()
 
                 if args.debug_prompt and episode_idx < args.debug_episodes and step <= args.debug_steps:
                     print("=" * 100)

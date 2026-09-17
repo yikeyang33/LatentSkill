@@ -232,6 +232,36 @@ must not be enabled directly because it does not shard LatentSkill's generated
 LoRA tensors with the matching row/column rules. `reflexion` evaluation is not
 shardable because it intentionally carries memory between episodes.
 
+For higher-throughput BF16 evaluation, export the five generated skill
+adapters once and serve them as PEFT LoRAs with vLLM continuous batching:
+
+```bash
+# One-time isolated runtime; does not modify the training/evaluation venv.
+bash scripts/setup_vllm_env.sh
+
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. .shared-runtime/venv/bin/python \
+  scripts/export_alfworld_skill_loras.py \
+  --checkpoint checkpoints/latentskill_sft_qwen3_8b/checkpoint-epoch-10 \
+  --model_path /media/public/models/huggingface/Qwen/Qwen3-8B
+
+# Run each long-lived command in a named tmux session.
+CUDA_VISIBLE_DEVICES=0 bash scripts/serve_alfworld_vllm.sh
+VLLM_BASE_URL=http://127.0.0.1:8000 \
+  bash scripts/eval_alfworld_sft_vllm.sh seen 8 all
+```
+
+The clients retain deterministic episode sharding and the original prompt,
+action parser, and 4096-token generation limit. vLLM owns one BF16 backbone,
+selects the task-specific LoRA per request, and continuously batches requests
+from the independent ALFWorld clients. Keep its results separate from the FP32
+reference run because BF16 and the vLLM kernels can change greedy-decoding ties.
+Each exported adapter also contains a copy of the backbone tokenizer metadata.
+Do not remove those files: vLLM resolves a tokenizer from each absolute LoRA
+path, and an adapter-only directory can otherwise be interpreted as an invalid
+256-token byte vocabulary. The evaluator stops generation immediately after a
+complete `</action>` tag, while retaining that tag for the existing parser; the
+4096-token limit remains the safety cap rather than a cost paid on every turn.
+
 ### SearchQA
 
 Start a retrieval server separately or use the helper script in `evals/searchqa/run_eval.sh`. The evaluation command expects a running server at `RETRIEVAL_URL`.
