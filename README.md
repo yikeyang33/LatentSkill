@@ -250,6 +250,32 @@ VLLM_BASE_URL=http://127.0.0.1:8000 \
   bash scripts/eval_alfworld_sft_vllm.sh seen 8 all
 ```
 
+To data-parallelize without tensor parallelism, start one single-GPU server per
+GPU on different ports, then round-robin the deterministic shards across them:
+
+```bash
+VLLM_BASE_URLS=http://127.0.0.1:8010,http://127.0.0.1:8011 \
+  bash scripts/eval_alfworld_sft_vllm.sh seen 8 all
+```
+
+Set `RESUME=1` to retain completed JSONL records after an interrupted run and
+evaluate only the missing episode indices in each shard.
+
+When adding replicas to an already-running evaluation, repartition the saved
+records to keep roughly eight active clients per GPU. For example, widen an
+eight-shard partial run to 32 shards before resuming on four endpoints:
+
+```bash
+python scripts/repartition_alfworld_shards.py \
+  --input_dir evals/alfworld/results/PARTIAL_RUN \
+  --output_dir evals/alfworld/results/FOUR_GPU_RUN \
+  --split seen --source_shards 8 --target_shards 32
+
+RESUME=1 VLLM_BASE_URLS=http://127.0.0.1:8010,http://127.0.0.1:8011,http://127.0.0.1:8012,http://127.0.0.1:8013 \
+  OUTPUT_DIR=evals/alfworld/results/FOUR_GPU_RUN \
+  bash scripts/eval_alfworld_sft_vllm.sh seen 32 all
+```
+
 The clients retain deterministic episode sharding and the original prompt,
 action parser, and 4096-token generation limit. vLLM owns one BF16 backbone,
 selects the task-specific LoRA per request, and continuously batches requests

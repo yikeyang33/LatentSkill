@@ -14,22 +14,31 @@ OUTPUT_DIR=${OUTPUT_DIR:-evals/alfworld/results/$RUN_TAG}
 LOG_DIR=${LOG_DIR:-evals/alfworld/logs/$RUN_TAG}
 PYTHON_BIN=${PYTHON_BIN:-.shared-runtime/venv/bin/python}
 VLLM_BASE_URL=${VLLM_BASE_URL:-http://127.0.0.1:8000}
+VLLM_BASE_URLS=${VLLM_BASE_URLS:-$VLLM_BASE_URL}
+RESUME=${RESUME:-0}
 mkdir -p "$OUTPUT_DIR" "$LOG_DIR"
 
-# Refuse to start clients before the adapter models are visible.
-"$PYTHON_BIN" - "$VLLM_BASE_URL" <<'PY'
+# Refuse to start clients before the adapter models are visible on every replica.
+IFS=',' read -r -a vllm_urls <<< "$VLLM_BASE_URLS"
+if [ "${#vllm_urls[@]}" -eq 0 ]; then
+    echo "VLLM_BASE_URLS did not contain an endpoint" >&2
+    exit 1
+fi
+"$PYTHON_BIN" - "${vllm_urls[@]}" <<'PY'
 import json, sys, urllib.request
-with urllib.request.urlopen(sys.argv[1].rstrip('/') + '/v1/models', timeout=10) as r:
-    models = {m['id'] for m in json.load(r)['data']}
 required = {f'latentskill-{x}' for x in ['pick_and_place','cool','heat','clean','look_at_obj_in_light']}
-missing = required - models
-if missing:
-    raise SystemExit(f'missing served adapters: {sorted(missing)}')
-print('vLLM ready:', ', '.join(sorted(required)))
+for base_url in dict.fromkeys(sys.argv[1:]):
+    with urllib.request.urlopen(base_url.rstrip('/') + '/v1/models', timeout=10) as r:
+        models = {m['id'] for m in json.load(r)['data']}
+    missing = required - models
+    if missing:
+        raise SystemExit(f'{base_url}: missing served adapters: {sorted(missing)}')
+    print(f'vLLM ready at {base_url}:', ', '.join(sorted(required)))
 PY
 
 pids=()
 for ((shard=0; shard<NUM_CLIENTS; shard++)); do
+    endpoint=${vllm_urls[$((shard % ${#vllm_urls[@]}))]}
     args=(
         -m evals.alfworld.evaluate
         --checkpoint checkpoints/latentskill_sft_qwen3_8b/checkpoint-epoch-10
@@ -48,8 +57,11 @@ for ((shard=0; shard<NUM_CLIENTS; shard++)); do
         --dtype bfloat16
         --num_shards "$NUM_CLIENTS"
         --shard_index "$shard"
-        --vllm_base_url "$VLLM_BASE_URL"
+        --vllm_base_url "$endpoint"
     )
+    if [ "$RESUME" = 1 ]; then
+        args+=(--resume)
+    fi
     if [ "$MAX_GAMES" != all ]; then
         args+=(--max_games "$MAX_GAMES")
     fi

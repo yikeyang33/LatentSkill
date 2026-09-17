@@ -116,6 +116,8 @@ def parse_args():
                         help="Split independent episodes across this many workers")
     parser.add_argument("--shard_index", type=int, default=0,
                         help="Zero-based worker index when --num_shards is greater than one")
+    parser.add_argument("--resume", action="store_true",
+                        help="Append to this shard and skip episode indices already recorded")
 
     parser.add_argument("--debug_prompt", action="store_true",
                         help="Print prompt tails for early episodes")
@@ -982,16 +984,51 @@ def main():
             f"{shard_episode_count} of {eval_num_games} episodes"
         )
 
-    with open(detail_path, "w", encoding="utf-8") as detail_f:
+    completed_records = {}
+    if args.resume and detail_path.is_file():
+        for line_number, line in enumerate(
+            detail_path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            episode_idx = record["episode_idx"]
+            if episode_idx % args.num_shards != args.shard_index:
+                raise ValueError(
+                    f"{detail_path}:{line_number}: episode {episode_idx} "
+                    f"does not belong to shard {args.shard_index}"
+                )
+            if episode_idx in completed_records:
+                raise ValueError(
+                    f"{detail_path}:{line_number}: duplicate episode {episode_idx}"
+                )
+            completed_records[episode_idx] = record
+            task_results[record["task_type"]].append(bool(record["won"]))
+        print(
+            f"[resume] loaded {len(completed_records)} completed episodes "
+            f"from {detail_path}"
+        )
+
+    detail_mode = "a" if args.resume else "w"
+    with open(detail_path, detail_mode, encoding="utf-8") as detail_f:
         # pbar = tqdm(total=eval_num_games, desc=f"ALFWorld {args.split}")
         filter_label = f"[{args.task_type_filter}]" if args.task_type_filter else ""
-        pbar = tqdm(total=shard_episode_count, desc=f"ALFWorld {args.split} {filter_label}")
+        pbar = tqdm(
+            total=shard_episode_count,
+            initial=len(completed_records),
+            desc=f"ALFWorld {args.split} {filter_label}",
+        )
 
         for episode_idx in range(eval_num_games):
             if episode_idx % args.num_shards != args.shard_index:
                 # TextWorld uses a deterministic shuffled cycle (seed 1234). Advancing
                 # its iterator preserves the exact official episode order without
                 # paying the cost of loading games assigned to another worker.
+                env.skip(1)
+                continue
+            if episode_idx in completed_records:
+                # A completed record already contains the task metadata and result.
+                # Advance the deterministic iterator without reloading that game.
                 env.skip(1)
                 continue
             obs_list, info_list = env.reset()
