@@ -5,6 +5,7 @@ import os
 import json
 import re
 import argparse
+import gc
 from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
@@ -76,6 +77,10 @@ def parse_args():
                         ),
                         help="Output directory")
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--dtype", choices=["float32", "bfloat16"], default="float32",
+                        help="Model precision; float32 preserves the original evaluator")
+    parser.add_argument("--model_parallel", action="store_true",
+                        help="Shard complete model layers across all visible GPUs")
     parser.add_argument("--zero_shot", action="store_true",
                     help="Use the Qwen3-8B backbone without LatentSkill adapters")
     parser.add_argument("--skill_incontext", action="store_true",
@@ -100,6 +105,10 @@ def parse_args():
                     help="Use the stricter SkillRL memory prompt")
     parser.add_argument("--max_games", type=int, default=None,
                         help="Evaluate only the first N episodes")
+    parser.add_argument("--num_shards", type=int, default=1,
+                        help="Split independent episodes across this many workers")
+    parser.add_argument("--shard_index", type=int, default=0,
+                        help="Zero-based worker index when --num_shards is greater than one")
 
     parser.add_argument("--debug_prompt", action="store_true",
                         help="Print prompt tails for early episodes")
@@ -136,6 +145,12 @@ def parse_args():
 
 def load_model(args, base_only: bool = False):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    model_dtype = (
+        torch.bfloat16
+        if args.dtype == "bfloat16" and device.type == "cuda"
+        else torch.float32
+    )
+    print(f"[model] dtype={model_dtype}")
     config_path = Path("configs") / f"{args.config_name}.yaml"
     cfg = OmegaConf.load(config_path)
 
@@ -154,7 +169,7 @@ def load_model(args, base_only: bool = False):
 
         raw_model = AutoModelForCausalLM.from_pretrained(
             model_from,
-            torch_dtype=torch.bfloat16 if device.type == "cuda" else torch.float32,
+            dtype=torch.bfloat16 if device.type == "cuda" else torch.float32,
             trust_remote_code=True,
         )
         raw_model.to(device)
@@ -170,15 +185,20 @@ def load_model(args, base_only: bool = False):
     cfg.hidden_size = model_config.hidden_size
     cfg.num_layers  = model_config.num_hidden_layers
 
-    tmp_model = BackboneModelCls.from_pretrained(cfg.model.model_from, config=model_config)
-    adapter_numel = tmp_model.adapter_params_numel(cfg.model.lora_r)
+    # Only module shapes are needed here. Constructing on the meta device avoids
+    # reading the 8B checkpoint twice and does not affect model values.
+    from accelerate import init_empty_weights
+    with init_empty_weights():
+        shape_model = BackboneModelCls(model_config)
+    adapter_numel = shape_model.adapter_params_numel(cfg.model.lora_r)
     assert adapter_numel % (cfg.hidden_size * cfg.num_layers) == 0
     model_config.num_mem_token = (
         adapter_numel * cfg.hypernetwork.transformer_cfg.mean_pool_size
         // (cfg.hidden_size * cfg.num_layers)
     )
     cfg.num_mem_token = model_config.num_mem_token
-    del tmp_model
+    del shape_model
+    gc.collect()
 
     tokenizer = AutoTokenizer.from_pretrained(
         cfg.model.tokenizer_from, padding_side="left", use_fast=True
@@ -245,7 +265,9 @@ def load_model(args, base_only: bool = False):
         "        {{- '<think>\\n' }}\n    {%- endif %}\n{%- endif %}"
     )
 
-    backbone = BackboneModelCls.from_pretrained(cfg.model.model_from, config=model_config)
+    backbone = BackboneModelCls.from_pretrained(
+        cfg.model.model_from, config=model_config, dtype=model_dtype
+    )
     backbone.reset_mem_tokens()
     backbone.resize_token_embeddings(len(tokenizer))
 
@@ -259,18 +281,109 @@ def load_model(args, base_only: bool = False):
 
     # Skill-LoRA mode freezes the backbone and loads the compiler checkpoint.
     skill_hypernet = SkillHypernetwork(backbone, cfg, backbone.adapter_params_numel(cfg.model.lora_r))
-    skill_hypernet.to(device)
     freeze_backbone_except_memory(backbone)
 
     print(f"[model] Loading IFT checkpoint from {args.checkpoint}...")
-    skill_hypernet, metalora, _ = restore_latentskill_checkpoint(
-        skill_hypernet, args.checkpoint, device, load_ift_additional_metalora=False
-    )
+    if args.model_parallel:
+        if device.type != "cuda" or torch.cuda.device_count() < 2:
+            raise ValueError("--model_parallel requires at least two visible CUDA GPUs")
+        # Restore on CPU first, then dispatch whole decoder layers. Unlike tensor
+        # parallelism this does not split the custom LatentSkill LoRA projections.
+        skill_hypernet, metalora, _ = restore_latentskill_checkpoint(
+            skill_hypernet, args.checkpoint, "cpu", load_ift_additional_metalora=False
+        )
+        from accelerate import dispatch_model
+        gpu_count = torch.cuda.device_count()
+        layer_count = len(backbone.model.layers)
+        device_map = {
+            "backbone.model.mem_tokens": 0,
+            "backbone.model.embed_tokens": 0,
+            "backbone.model.rotary_emb": 0,
+            "backbone.model.norm": gpu_count - 1,
+            "backbone.lm_head": gpu_count - 1,
+            "generator": gpu_count - 1,
+        }
+        for layer_index in range(layer_count):
+            target = min(gpu_count - 1, layer_index * gpu_count // layer_count)
+            device_map[f"backbone.model.layers.{layer_index}"] = target
+        skill_hypernet = dispatch_model(
+            skill_hypernet,
+            device_map=device_map,
+            skip_keys="past_key_values",
+        )
+        backbone = skill_hypernet.backbone
+        # `mem_tokens` is a bare Parameter rather than a submodule, so Accelerate
+        # validates its map entry but cannot attach a device hook to it.
+        mem_tokens = backbone.model.mem_tokens
+        backbone.model.mem_tokens = torch.nn.Parameter(
+            mem_tokens.detach().to("cuda:0"),
+            requires_grad=mem_tokens.requires_grad,
+        )
+        device = torch.device("cuda:0")
+
+        def move_nested(value, target_device):
+            if torch.is_tensor(value):
+                return value.to(target_device)
+            if isinstance(value, dict):
+                return {key: move_nested(item, target_device) for key, item in value.items()}
+            if isinstance(value, list):
+                return [move_nested(item, target_device) for item in value]
+            if isinstance(value, tuple):
+                return tuple(move_nested(item, target_device) for item in value)
+            return value
+
+        metalora = {
+            layer_index: move_nested(
+                layer_state,
+                next(backbone.model.layers[int(layer_index)].parameters()).device,
+            )
+            for layer_index, layer_state in metalora.items()
+        }
+        print(f"[model] layer device map: {device_map}")
+    else:
+        skill_hypernet.to(device=device, dtype=model_dtype)
+        skill_hypernet, metalora, _ = restore_latentskill_checkpoint(
+            skill_hypernet, args.checkpoint, device, load_ift_additional_metalora=False
+        )
+    if model_dtype != torch.float32:
+        def cast_floating_tensors(value):
+            if torch.is_tensor(value):
+                return value.to(dtype=model_dtype) if value.is_floating_point() else value
+            if isinstance(value, dict):
+                return {key: cast_floating_tensors(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [cast_floating_tensors(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(cast_floating_tensors(item) for item in value)
+            return value
+        metalora = cast_floating_tensors(metalora)
     skill_hypernet.eval()
     backbone.config.use_cache = True
 
     print(f"[model] Loaded checkpoint. num_mem_token={model_config.num_mem_token}")
     return skill_hypernet, metalora, tokenizer, device, cfg, backbone
+
+
+def move_adapter_state_to_model(adapter_state, backbone):
+    """Place each generated layer adapter beside its complete decoder layer."""
+    def move_nested(value, device):
+        if torch.is_tensor(value):
+            return value.to(device)
+        if isinstance(value, dict):
+            return {key: move_nested(item, device) for key, item in value.items()}
+        if isinstance(value, list):
+            return [move_nested(item, device) for item in value]
+        if isinstance(value, tuple):
+            return tuple(move_nested(item, device) for item in value)
+        return value
+
+    return {
+        layer_index: move_nested(
+            layer_state,
+            next(backbone.model.layers[int(layer_index)].parameters()).device,
+        )
+        for layer_index, layer_state in adapter_state.items()
+    }
 
 
 def detect_task_type(gamefile: str) -> str:
@@ -424,6 +537,12 @@ TASK_TYPE_NAMES = {
 
 def main():
     args = parse_args()
+    if args.num_shards < 1:
+        raise ValueError("--num_shards must be at least 1")
+    if not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("--shard_index must satisfy 0 <= shard_index < num_shards")
+    if args.reflexion and args.num_shards != 1:
+        raise ValueError("Reflexion carries state across episodes and cannot be sharded safely")
     use_skillrl_memory = args.skillrl_memory_json is not None
 
     if args.raw_base:
@@ -579,6 +698,8 @@ def main():
                 adapter_state = skill_hypernet.build_adapter_state(
                     evidence_ids, evidence_mask, metalora
                 )
+            if args.model_parallel:
+                adapter_state = move_adapter_state_to_model(adapter_state, backbone)
             skill_adapter_states[skill] = adapter_state
             print(f"  [OK] {skill}")
 
@@ -754,6 +875,25 @@ def main():
             print("[lora_combo] moe_combo: 0.15×gen + 0.15×look_task "
                   "+ 0.15×pick_task + 0.15×mistakes, rank expands from 8 to 32")
 
+    if use_lora:
+        # Evaluation only needs the generated adapters and backbone. Releasing the
+        # compiler lowers steady-state memory enough for 24GB inference cards.
+        del metalora
+        if args.model_parallel:
+            skill_hypernet.generator = None
+        else:
+            skill_hypernet.generator.to("cpu")
+        gc.collect()
+        if device.type == "cuda":
+            for cuda_index in range(torch.cuda.device_count()):
+                with torch.cuda.device(cuda_index):
+                    torch.cuda.empty_cache()
+            usage = ", ".join(
+                f"cuda:{cuda_index} allocated={torch.cuda.memory_allocated(cuda_index) / 2**30:.2f}GiB"
+                for cuda_index in range(torch.cuda.device_count())
+            )
+            print(f"[memory] compiler released; {usage}")
+
     train_eval = (
         "eval_out_of_distribution" if args.split == "unseen"
         else "eval_in_distribution"
@@ -770,20 +910,37 @@ def main():
     num_games = base_env.num_games
     print(f"[ALFWorld] {num_games} episodes")
 
-    detail_path = output_dir / f"results_detail_{args.split}.jsonl"
+    shard_suffix = (
+        f"_shard{args.shard_index:03d}-of-{args.num_shards:03d}"
+        if args.num_shards > 1 else ""
+    )
+    detail_path = output_dir / f"results_detail_{args.split}{shard_suffix}.jsonl"
     task_results = defaultdict(list)  # task_type → [True/False, ...]
     invalid_action_counts = defaultdict(int)
     # Reflexion keeps reflections isolated by task type.
     reflection_buffer: Dict[str, List[str]] = defaultdict(list)
 
     eval_num_games = min(num_games, args.max_games) if args.max_games is not None else num_games
+    shard_episode_indices = range(args.shard_index, eval_num_games, args.num_shards)
+    shard_episode_count = len(shard_episode_indices)
+    if args.num_shards > 1:
+        print(
+            f"[shard] worker {args.shard_index}/{args.num_shards}: "
+            f"{shard_episode_count} of {eval_num_games} episodes"
+        )
 
     with open(detail_path, "w", encoding="utf-8") as detail_f:
         # pbar = tqdm(total=eval_num_games, desc=f"ALFWorld {args.split}")
         filter_label = f"[{args.task_type_filter}]" if args.task_type_filter else ""
-        pbar = tqdm(total=eval_num_games, desc=f"ALFWorld {args.split} {filter_label}")
+        pbar = tqdm(total=shard_episode_count, desc=f"ALFWorld {args.split} {filter_label}")
 
         for episode_idx in range(eval_num_games):
+            if episode_idx % args.num_shards != args.shard_index:
+                # TextWorld uses a deterministic shuffled cycle (seed 1234). Advancing
+                # its iterator preserves the exact official episode order without
+                # paying the cost of loading games assigned to another worker.
+                env.skip(1)
+                continue
             obs_list, info_list = env.reset()
             obs  = obs_list[0]
 
@@ -1322,6 +1479,8 @@ def main():
 
             detail_record = {
                 "episode_idx":     episode_idx,
+                "shard_index":     args.shard_index,
+                "num_shards":      args.num_shards,
                 "gamefile":        gamefile,
                 "task_type":       task_type,
                 "task_description": task_description,
@@ -1388,7 +1547,7 @@ def main():
     print(f"{'Overall':<25} {sum(all_results):>8} {len(all_results):>8} {overall_rate:>8.4f}")
     print(f"{'='*60}")
 
-    summary_path = output_dir / f"results_summary_{args.split}.json"
+    summary_path = output_dir / f"results_summary_{args.split}{shard_suffix}.json"
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 

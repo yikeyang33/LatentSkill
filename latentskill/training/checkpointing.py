@@ -58,7 +58,14 @@ def restore_latentskill_checkpoint(
             f"Shape mismatch for mem_tokens: saved {saved_mem_tokens.shape}, "
             f"model {skill_hypernet.backbone.model.mem_tokens.shape}"
         )
-        skill_hypernet.backbone.model.mem_tokens = saved_mem_tokens
+        target_mem_tokens = skill_hypernet.backbone.model.mem_tokens
+        with torch.no_grad():
+            target_mem_tokens.copy_(
+                saved_mem_tokens.to(
+                    device=target_mem_tokens.device,
+                    dtype=target_mem_tokens.dtype,
+                )
+            )
     generator_path = _first_existing_checkpoint_file(
         in_dir, ("hypernetwork.pth", "metanetwork.pth", "skill_hypernet.pth")
     )

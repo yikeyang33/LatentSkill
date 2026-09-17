@@ -212,6 +212,25 @@ python -m evals.alfworld.evaluate \
 2>&1 | tee "$LOG_DIR/alfworld.log"
 ```
 
+For the released epoch-10 SFT checkpoint, `scripts/eval_alfworld_sft.sh`
+reproduces the runnable official script settings (`max_steps=50`,
+`max_new_tokens=2048`). A single FP32 process needs more than 24 GiB. On a
+3090 host, use two GPUs per worker and shard independent episodes across
+workers:
+
+```bash
+# Run inside a named tmux session. Each comma-separated pair is one FP32
+# layer-parallel worker; semicolons separate episode shards.
+bash scripts/eval_alfworld_sft_parallel.sh seen '0,1;2,3;4,5;6,7' all
+```
+
+The launcher writes one JSONL file per shard, waits for every worker, verifies
+complete episode coverage, and merges the files in episode order. This mode
+keeps complete dynamic-LoRA layers intact; standard Qwen tensor parallelism
+must not be enabled directly because it does not shard LatentSkill's generated
+LoRA tensors with the matching row/column rules. `reflexion` evaluation is not
+shardable because it intentionally carries memory between episodes.
+
 ### SearchQA
 
 Start a retrieval server separately or use the helper script in `evals/searchqa/run_eval.sh`. The evaluation command expects a running server at `RETRIEVAL_URL`.

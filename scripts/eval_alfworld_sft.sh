@@ -56,6 +56,7 @@ args=(
     --conversation_max_length 4096
     --output_dir "$OUTPUT_DIR"
     --device cuda
+    --dtype "${MODEL_DTYPE:-float32}"
 )
 
 if [ "$MAX_GAMES" != "all" ]; then
@@ -65,6 +66,9 @@ fi
 if [ "$DEBUG_PROMPT" = "1" ]; then
     args+=(--debug_prompt --debug_episodes 1 --debug_steps 1)
 fi
+if [ "${MODEL_PARALLEL:-0}" = "1" ]; then
+    args+=(--model_parallel)
+fi
 
 echo "Model      : $MODEL_PATH"
 echo "Checkpoint : $CHECKPOINT"
@@ -73,6 +77,8 @@ echo "Max games  : $MAX_GAMES"
 echo "Max steps  : $MAX_STEPS"
 echo "Max tokens : $MAX_NEW_TOKENS"
 echo "GPU        : $GPU_ID"
+echo "Dtype      : ${MODEL_DTYPE:-float32}"
+echo "Model MP   : ${MODEL_PARALLEL:-0}"
 echo "Output     : $OUTPUT_DIR"
 echo "Log        : $LOG_FILE"
 
