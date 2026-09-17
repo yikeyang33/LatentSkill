@@ -9,6 +9,7 @@ set -euo pipefail
 SPLIT=${1:-seen}
 GPU_GROUPS=${2:-0,1;2,3;4,5;6,7}
 MAX_GAMES=${3:-all}
+MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-4096}
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$PROJECT_ROOT"
 
@@ -20,9 +21,9 @@ if [ "$NUM_SHARDS" -lt 1 ]; then
 fi
 
 if [ "$MAX_GAMES" = "all" ]; then
-    RUN_TAG="sft_epoch10_${SPLIT}_parallel_${NUM_SHARDS}way"
+    RUN_TAG="sft_epoch10_${SPLIT}_${MAX_NEW_TOKENS}tok_parallel_${NUM_SHARDS}way"
 else
-    RUN_TAG="sft_epoch10_${SPLIT}_${MAX_GAMES}games_parallel_${NUM_SHARDS}way"
+    RUN_TAG="sft_epoch10_${SPLIT}_${MAX_GAMES}games_${MAX_NEW_TOKENS}tok_parallel_${NUM_SHARDS}way"
 fi
 OUTPUT_DIR=${OUTPUT_DIR:-evals/alfworld/results/${RUN_TAG}}
 LOG_DIR=${LOG_DIR:-evals/alfworld/logs/${RUN_TAG}}
@@ -42,7 +43,7 @@ for shard_index in "${!GPU_GROUP_ARRAY[@]}"; do
         --alfworld_config "${ALFWORLD_CONFIG:-evals/alfworld/config_tw.yaml}"
         --skill_context_dir "${SKILL_CONTEXT_DIR:-evals/alfworld/skills}"
         --max_steps "${MAX_STEPS:-50}"
-        --max_new_tokens "${MAX_NEW_TOKENS:-2048}"
+        --max_new_tokens "$MAX_NEW_TOKENS"
         --history_length 5
         --context_max_length 4096
         --conversation_max_length 4096

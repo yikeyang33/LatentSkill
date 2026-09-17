@@ -213,10 +213,11 @@ python -m evals.alfworld.evaluate \
 ```
 
 For the released epoch-10 SFT checkpoint, `scripts/eval_alfworld_sft.sh`
-reproduces the runnable official script settings (`max_steps=50`,
-`max_new_tokens=2048`). A single FP32 process needs more than 24 GiB. On a
-3090 host, use two GPUs per worker and shard independent episodes across
-workers:
+uses `max_steps=50` and a 4096-token generation limit, matching the training
+maximum sequence length and the repository's documented evaluation command.
+(The originally released `evals/alfworld/run_eval.sh` used 2048.) A single
+FP32 process needs more than 24 GiB. On a 3090 host, use two GPUs per worker
+and shard independent episodes across workers:
 
 ```bash
 # Run inside a named tmux session. Each comma-separated pair is one FP32

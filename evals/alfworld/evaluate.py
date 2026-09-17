@@ -62,7 +62,7 @@ def parse_args():
                         help="Directory containing ALFWorld skill text files")
     parser.add_argument("--max_steps", type=int, default=50,
                         help="Maximum steps per episode")
-    parser.add_argument("--max_new_tokens", type=int, default=512,
+    parser.add_argument("--max_new_tokens", type=int, default=4096,
                         help="Maximum generated tokens per step")
     parser.add_argument("--history_length", type=int, default=5,
                         help="Number of recent steps kept in the prompt")

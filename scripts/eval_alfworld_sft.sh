@@ -12,7 +12,7 @@ SPLIT=${1:-seen}
 MAX_GAMES=${2:-all}
 GPU_ID=${3:-0}
 MAX_STEPS=${MAX_STEPS:-50}
-MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}
+MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-4096}
 DEBUG_PROMPT=${DEBUG_PROMPT:-0}
 
 if [ "$SPLIT" != "seen" ] && [ "$SPLIT" != "unseen" ]; then

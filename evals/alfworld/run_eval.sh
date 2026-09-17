@@ -59,7 +59,7 @@ nohup python -m evals.alfworld.evaluate \
     --alfworld_config "$ALFWORLD_CONFIG" \
     --skill_context_dir "$SKILL_CONTEXT_DIR" \
     --max_steps 50 \
-    --max_new_tokens 2048 \
+    --max_new_tokens 4096 \
     --history_length 5 \
     --context_max_length 4096 \
     --conversation_max_length 4096 \
